@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/db";
 import { ScheduleRow, ScheduleInputSchema, TenantRow, AgentRow } from "@/lib/validation";
+import { z } from "zod";
 import { withErrorHandler } from "@/lib/api";
 import { generateId } from "@/lib/crypto";
 import { computeNextRunAt, buildScheduleConfig } from "@/lib/schedule";
@@ -16,7 +17,7 @@ export const GET = withErrorHandler(async (_request: NextRequest, context) => {
   const { agentId } = await (context as RouteContext).params;
 
   // Verify agent exists (consistent with POST handler)
-  const agent = await queryOne(AgentRow, "SELECT id FROM agents WHERE id = $1", [agentId]);
+  const agent = await queryOne(z.object({ id: z.string() }), "SELECT id FROM agents WHERE id = $1", [agentId]);
   if (!agent) {
     return NextResponse.json({ error: { message: "Agent not found" } }, { status: 404 });
   }
