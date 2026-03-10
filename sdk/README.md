@@ -213,6 +213,73 @@ const marketplaces = await client.pluginMarketplaces.list();
 const plugins = await client.pluginMarketplaces.listPlugins(marketplaceId);
 ```
 
+### Sessions (Multi-Turn Chat)
+
+Sessions provide persistent multi-turn conversations with agents. Unlike one-shot runs, sessions keep the sandbox alive between messages and use Claude Agent SDK's `resume` for full conversation context.
+
+#### Create a session and send the first message
+
+```ts
+// Create session + send first message (returns a stream)
+const stream = await client.sessions.create({
+  agent_id: "agent_abc123",
+  prompt: "Set up a React project with TypeScript",
+});
+
+for await (const event of stream) {
+  if (event.type === "text_delta") {
+    process.stdout.write(event.text);
+  }
+}
+```
+
+#### Create a session without a prompt
+
+```ts
+// Create session without a prompt (returns Session object)
+const session = await client.sessions.create({ agent_id: "agent_abc123" });
+console.log(session.id); // "sess_..."
+```
+
+#### Send follow-up messages
+
+```ts
+const stream = await client.sessions.sendMessage(session.id, {
+  prompt: "Now add unit tests for the App component",
+});
+
+for await (const event of stream) {
+  if (event.type === "text_delta") {
+    process.stdout.write(event.text);
+  }
+}
+```
+
+#### Send a message and wait for completion
+
+```ts
+const result = await client.sessions.sendMessageAndWait(session.id, {
+  prompt: "What files did you create?",
+});
+
+console.log(result.text); // Full response text
+console.log(result.events); // All stream events
+```
+
+#### List and manage sessions
+
+```ts
+// List sessions
+const { data } = await client.sessions.list({ agent_id: "agent_abc123" });
+
+// Get session details with message history
+const session = await client.sessions.get("sess_abc123");
+console.log(session.runs); // Array of runs (one per message)
+
+// Stop a session
+await client.sessions.stop("sess_abc123");
+```
+
 ### Abort a stream
 
 ```ts
