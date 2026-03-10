@@ -98,7 +98,7 @@ src/
   db/
     index.ts              # DB client (Pool, query helpers, RLS context, transactions)
     migrate.ts            # migration runner
-    migrations/           # sequential SQL migration files (001–014)
+    migrations/           # sequential SQL migration files (001–015)
   lib/
     types.ts              # branded types, domain interfaces, StreamEvent union
     env.ts                # Zod-validated env (getEnv())
@@ -177,7 +177,7 @@ Neon Postgres with Row-Level Security (RLS). Tables: `tenants`, `api_keys`, `age
 - Agent names are unique per tenant
 - RLS enforced via `app.current_tenant_id` session config (fail-closed via `NULLIF`)
 - Tenant-scoped transactions via `withTenantTransaction()`
-- Migrations: numbered SQL files in `src/db/migrations/` (currently 001–014), run via `npm run migrate`
+- Migrations: numbered SQL files in `src/db/migrations/` (currently 001–015), run via `npm run migrate`
 - `tenants` table includes: `timezone` column for schedule evaluation
 - `agents` table includes: Composio MCP cache columns, `composio_allowed_tools` (per-toolkit tool filtering), `skills` JSONB, `plugins` JSONB, schedule columns (`schedule_frequency`, `schedule_time`, `schedule_day_of_week`, `schedule_prompt`, `schedule_enabled`, `last_run_at`, `next_run_at`), `max_runtime_seconds` (60–3600, default 600)
 - `runs` table includes: `triggered_by` column (`api`, `schedule`, `playground`, `chat`) to track run source; `session_id` FK to sessions table for chat messages

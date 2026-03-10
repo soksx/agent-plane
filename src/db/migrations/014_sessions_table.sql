@@ -37,9 +37,6 @@ CREATE INDEX idx_sessions_tenant ON sessions (tenant_id);
 -- Agent-scoped queries (list sessions for an agent)
 CREATE INDEX idx_sessions_agent ON sessions (agent_id);
 
--- Concurrent session count check (tenant + active statuses)
-CREATE INDEX idx_sessions_tenant_status ON sessions (tenant_id, status);
-
 -- Cleanup cron: find idle sessions past threshold
 CREATE INDEX idx_sessions_idle ON sessions (status, idle_since)
   WHERE status = 'idle';
@@ -94,24 +91,16 @@ CREATE INDEX IF NOT EXISTS idx_runs_session ON runs (session_id) WHERE session_i
 -- ============================================================
 
 -- The triggered_by column was added with an inline unnamed CHECK in migration 010.
--- Postgres auto-generates the constraint name. Use dynamic lookup to find and drop it.
+-- Postgres auto-generates the constraint name. We need to find it dynamically.
+-- Common auto-generated name: runs_triggered_by_check
+-- If this DROP does nothing (wrong name), the next ALTER will fail when
+-- inserting 'chat' values because the old constraint still blocks it.
 
-DO $$
-DECLARE
-  constraint_name TEXT;
-BEGIN
-  SELECT con.conname INTO constraint_name
-  FROM pg_constraint con
-  JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
-  WHERE con.conrelid = 'runs'::regclass
-    AND con.contype = 'c'
-    AND att.attname = 'triggered_by'
-  LIMIT 1;
+-- Try the most likely auto-generated name first
+ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_triggered_by_check;
 
-  IF constraint_name IS NOT NULL THEN
-    EXECUTE format('ALTER TABLE runs DROP CONSTRAINT %I', constraint_name);
-  END IF;
-END $$;
+-- Also try the column-based naming convention Postgres sometimes uses
+ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_triggered_by_check1;
 
 ALTER TABLE runs ADD CONSTRAINT runs_triggered_by_check
   CHECK (triggered_by IN ('api', 'schedule', 'playground', 'chat'))
