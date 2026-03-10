@@ -208,7 +208,8 @@ export const SafePluginFilename = z.string()
 // --- Schedule Validation ---
 
 export const ScheduleFrequencySchema = z.enum(["manual", "hourly", "daily", "weekdays", "weekly"]);
-export const RunTriggeredBySchema = z.enum(["api", "schedule", "playground"]);
+export const RunTriggeredBySchema = z.enum(["api", "schedule", "playground", "chat"]);
+export const SessionStatusSchema = z.enum(["creating", "active", "idle", "stopped"]);
 export const TimezoneSchema = z.string().min(1).max(100).refine(isValidTimezone, { message: "Invalid IANA timezone" });
 
 // --- Agent Validation ---
@@ -483,6 +484,7 @@ export const RunRow = z.object({
   sandbox_id: z.string().nullable(),
   triggered_by: RunTriggeredBySchema.default("api"),
   schedule_id: z.string().nullable().default(null),
+  session_id: z.string().nullable().default(null),
   started_at: z.coerce.string().nullable(),
   completed_at: z.coerce.string().nullable(),
   created_at: z.coerce.string(),
@@ -551,3 +553,47 @@ export const ScheduleInputSchema = addScheduleCrossFieldValidation(
 );
 
 export type ScheduleInput = z.infer<typeof ScheduleInputSchema>;
+
+// --- Session Validation ---
+
+export const CreateSessionSchema = z.object({
+  agent_id: z.string().uuid(),
+  prompt: z.string().min(1).max(100_000).optional(),
+});
+
+export type CreateSessionInput = z.infer<typeof CreateSessionSchema>;
+
+export const SendMessageSchema = z.object({
+  prompt: z.string().min(1).max(100_000),
+  max_turns: z.number().int().min(1).max(1000).optional(),
+  max_budget_usd: z.number().min(0.01).max(100.0).optional(),
+});
+
+export type SendMessageInput = z.infer<typeof SendMessageSchema>;
+
+export const SessionRow = z.object({
+  id: z.string(),
+  tenant_id: z.string(),
+  agent_id: z.string(),
+  sandbox_id: z.string().nullable(),
+  sdk_session_id: z.string().nullable(),
+  session_blob_url: z.string().nullable(),
+  status: SessionStatusSchema,
+  message_count: z.coerce.number(),
+  last_backup_at: z.coerce.string().nullable(),
+  idle_since: z.coerce.string().nullable(),
+  created_at: z.coerce.string(),
+  updated_at: z.coerce.string(),
+  last_message_at: z.coerce.string().nullable(),
+});
+
+export type Session = z.infer<typeof SessionRow>;
+
+// Public response schema — strips internal fields (sandbox_id, session_blob_url)
+export const SessionResponseRow = SessionRow.omit({
+  sandbox_id: true,
+  session_blob_url: true,
+  last_backup_at: true,
+});
+
+export type SessionResponse = z.infer<typeof SessionResponseRow>;

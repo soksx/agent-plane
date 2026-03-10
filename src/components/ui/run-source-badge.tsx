@@ -4,12 +4,14 @@ const STYLES: Record<RunTriggeredBy, string> = {
   schedule: "bg-blue-500/10 text-blue-400",
   playground: "bg-purple-500/10 text-purple-400",
   api: "bg-zinc-500/10 text-zinc-400",
+  chat: "bg-green-500/10 text-green-400",
 };
 
 const LABELS: Record<RunTriggeredBy, string> = {
   api: "API",
   schedule: "Schedule",
   playground: "Playground",
+  chat: "Chat",
 };
 
 export function RunSourceBadge({ triggeredBy }: { triggeredBy: RunTriggeredBy }) {
