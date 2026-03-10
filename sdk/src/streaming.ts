@@ -60,10 +60,10 @@ export async function* parseNdjsonStream(
 }
 
 export interface RunStreamOptions {
-  /** Injected: poll run status by ID. */
-  pollRun: (runId: string) => Promise<Run>;
-  /** Injected: fetch transcript stream by run ID. */
-  fetchTranscript: (runId: string, signal?: AbortSignal) => Promise<Response>;
+  /** Injected: poll run status by ID. Required for detach handling. */
+  pollRun?: ((runId: string) => Promise<Run>) | undefined;
+  /** Injected: fetch transcript stream by run ID. Required for detach handling. */
+  fetchTranscript?: ((runId: string, signal?: AbortSignal) => Promise<Response>) | undefined;
   /** External abort signal. */
   signal?: AbortSignal;
 }

@@ -214,6 +214,51 @@ export interface CustomConnectorOauthResult {
   redirectUrl: string;
 }
 
+// --- Sessions ---
+
+export type SessionStatus = "creating" | "active" | "idle" | "stopped";
+
+export interface Session {
+  id: string;
+  tenant_id: string;
+  agent_id: string;
+  status: SessionStatus;
+  message_count: number;
+  idle_since: string | null;
+  created_at: string;
+  updated_at: string;
+  last_message_at: string | null;
+}
+
+export interface CreateSessionParams {
+  agent_id: string;
+  prompt?: string | undefined;
+}
+
+export interface SendMessageParams {
+  prompt: string;
+  max_turns?: number | undefined;
+  max_budget_usd?: number | undefined;
+}
+
+export interface ListSessionsParams extends PaginationParams {
+  agent_id?: string | undefined;
+  status?: SessionStatus | undefined;
+}
+
+export interface SessionWithRuns extends Session {
+  runs: Run[];
+}
+
+// --- Session Events ---
+
+export interface SessionCreatedEvent {
+  type: "session_created";
+  session_id: string;
+  agent_id: string;
+  timestamp: string;
+}
+
 // --- Plugin Marketplaces ---
 
 export interface PluginMarketplace {
@@ -311,6 +356,7 @@ export type StreamEvent =
   | ResultEvent
   | ErrorEvent
   | StreamDetachedEvent
+  | SessionCreatedEvent
   | UnknownEvent;
 
 /** Internal: includes heartbeat (filtered before yielding). */
@@ -329,6 +375,7 @@ export const KNOWN_EVENT_TYPES = new Set([
   "result",
   "error",
   "stream_detached",
+  "session_created",
   "heartbeat",
 ]);
 

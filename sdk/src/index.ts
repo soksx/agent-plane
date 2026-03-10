@@ -15,6 +15,14 @@ export type {
   RunStatus,
   CreateRunParams,
   ListRunsParams,
+  // Sessions
+  Session,
+  SessionStatus,
+  SessionWithRuns,
+  CreateSessionParams,
+  SendMessageParams,
+  ListSessionsParams,
+  SessionCreatedEvent,
   PaginationParams,
   PaginatedResponse,
   // Connectors (Composio)

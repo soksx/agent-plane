@@ -2,6 +2,7 @@ import type { AgentPlaneOptions } from "./types";
 import { AgentPlaneError } from "./errors";
 import { RunsResource } from "./resources/runs";
 import { AgentsResource } from "./resources/agents";
+import { SessionsResource } from "./resources/sessions";
 import { ConnectorsResource } from "./resources/connectors";
 import { CustomConnectorsResource } from "./resources/custom-connectors";
 import { PluginMarketplacesResource } from "./resources/plugin-marketplaces";
@@ -12,6 +13,7 @@ const MAX_ERROR_BODY_BYTES = 64 * 1024; // 64KB
 export class AgentPlane {
   readonly runs: RunsResource;
   readonly agents: AgentsResource;
+  readonly sessions: SessionsResource;
   readonly connectors: ConnectorsResource;
   readonly customConnectors: CustomConnectorsResource;
   readonly pluginMarketplaces: PluginMarketplacesResource;
@@ -78,6 +80,7 @@ export class AgentPlane {
     this.customConnectors = customConnectors;
     this.pluginMarketplaces = new PluginMarketplacesResource(this);
     this.runs = new RunsResource(this);
+    this.sessions = new SessionsResource(this);
     this.agents = new AgentsResource(this, connectors, customConnectors);
   }
 
