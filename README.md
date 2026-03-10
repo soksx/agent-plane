@@ -14,6 +14,7 @@ A multi-tenant platform for running [Claude Agent SDK](https://docs.anthropic.co
 - **MCP connectors** — connect agents to external tools via Composio (GitHub, Slack, Firecrawl) or custom OAuth 2.1 MCP servers
 - **Full observability** — every run stores a transcript, token usage, cost, duration, and trigger source (API/schedule/playground)
 - **Playground** — test agents interactively from the admin dashboard with real-time event streaming
+- **Multi-turn sessions** — persistent conversations with context retention across messages; sandbox kept alive between turns; automatic backup/restore on cold start
 - **Configurable runtime** — set max runtime per agent (60–3600 seconds)
 - **TypeScript SDK** — `@getcatalystiq/agentplane` npm package with streaming, auto-polling, and typed events
 - **Admin dashboard** — manage tenants, agents, runs, connectors, plugins, and schedules with analytics charts
@@ -221,6 +222,11 @@ API keys are hashed with SHA-256 and optionally encrypted at rest with AES-256-G
 | `GET` | `/api/runs/:id` | Get run status (NDJSON stream) |
 | `POST` | `/api/runs/:id/cancel` | Cancel a run |
 | `GET` | `/api/runs/:id/transcript` | Get run transcript |
+| `POST` | `/api/sessions` | Create a session |
+| `GET` | `/api/sessions` | List sessions (filterable by `agent_id`, `status`) |
+| `GET` | `/api/sessions/:id` | Get session (includes runs) |
+| `POST` | `/api/sessions/:id/messages` | Send message (NDJSON stream) |
+| `DELETE` | `/api/sessions/:id` | Stop session |
 | `GET` | `/api/tenants/me` | Get current tenant |
 | `GET` | `/api/keys` | List API keys |
 | `POST` | `/api/keys` | Create API key |
@@ -239,6 +245,7 @@ API keys are hashed with SHA-256 and optionally encrypted at rest with AES-256-G
 | | `/api/admin/plugin-marketplaces/*` | Marketplace CRUD + plugin listing + file editing |
 | | `/api/admin/tenants/*` | Tenant CRUD + API key management |
 | | `/api/admin/runs/*` | Admin run viewing + cancellation |
+| | `/api/admin/sessions/*` | Admin session management + playground messaging |
 
 ## Deployment
 
@@ -270,7 +277,8 @@ For this to work, `DATABASE_URL_UNPOOLED` (or `DATABASE_URL_DIRECT`) must be set
 
 Vercel Cron jobs are configured in `vercel.json`:
 - **Scheduled runs** — every minute (dispatches due agent runs)
-- **Sandbox cleanup** — every 5 minutes
+- **Sandbox cleanup** — every 5 minutes (excludes session-owned sandboxes)
+- **Session cleanup** — every 5 minutes (idle timeout after 10 min, stuck session watchdog)
 - **Transcript cleanup** — daily at 3:00 AM UTC
 - **Budget reset** — daily at midnight UTC
 
@@ -304,6 +312,25 @@ const run = await client.runs.createAndWait({
   agent_id: "agent_abc123",
   prompt: "Fix the login bug",
 });
+
+// Multi-turn session with context retention
+const session = await client.sessions.create({ agent_id: "agent_abc123" });
+
+const stream1 = await client.sessions.sendMessage(session.id, {
+  prompt: "My name is Alice",
+});
+for await (const event of stream1) {
+  if (event.type === "result") console.log(event.result);
+}
+
+const stream2 = await client.sessions.sendMessage(session.id, {
+  prompt: "What is my name?",
+});
+for await (const event of stream2) {
+  if (event.type === "result") console.log(event.result); // "Alice"
+}
+
+await client.sessions.stop(session.id);
 ```
 
 See [`sdk/README.md`](sdk/README.md) for full documentation including agent management, error handling, and stream cancellation.

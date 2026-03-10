@@ -125,7 +125,8 @@ src/
     assets.ts             # ephemeral asset persistence (Composio URLs → Vercel Blob)
     runs.ts               # run lifecycle (create, transition, budget/concurrency checks)
     streaming.ts          # SSE/NDJSON streaming (heartbeats, stream detach)
-    transcripts.ts        # Vercel Blob transcript storage
+    transcript-utils.ts   # captureTranscript generator, parseResultEvent helper
+    transcripts.ts        # Vercel Blob transcript storage (allowOverwrite for race safety)
     api.ts                # withErrorHandler, jsonResponse helpers
     crypto.ts             # ID generation, key hashing, AES-256-GCM encryption
     idempotency.ts        # idempotent request handling
@@ -223,7 +224,7 @@ All routes (except `/api/health`) require `Authorization: Bearer <api_key>`. Adm
 - When MCP servers are present, `allowedTools` is suppressed so `mcp__*` tool names aren't blocked
 - Plugin skill files → `.claude/skills/<plugin-name>-<subfolder>/<filename>`; plugin command files → `.claude/commands/<plugin-name>-<filename>`
 - Network allowlist: `ai-gateway.vercel.sh`, `*.composio.dev`, `*.firecrawl.dev`, `*.githubusercontent.com`, `registry.npmjs.org`, platform API host, custom MCP server hosts
-- Runner uploads transcript to platform via `/api/internal/runs/:id/transcript` with a run-scoped bearer token for detached runs
+- Runner ALWAYS uploads transcript to platform via `/api/internal/runs/:id/transcript` with a run-scoped bearer token (not just detached runs)
 
 ## Patterns & Conventions
 
@@ -256,3 +257,5 @@ All routes (except `/api/health`) require `Authorization: Bearer <api_key>`. Adm
 - MCP token refresh in `buildMcpConfig()` is parallelized with `Promise.allSettled()` for faster cold starts
 - Cleanup cron for sessions runs every 5 min: stops idle sessions after 10 min, watchdog catches stuck creating (>5 min) and active (>30 min) sessions
 - `cleanup-sandboxes` cron excludes session-owned runs (`session_id IS NULL` filter)
+- Vercel Blob uploads use `allowOverwrite: true` to handle race between runner transcript upload and `finalizeSessionMessage` (both write to the same blob path)
+- Session file backup also uses `allowOverwrite: true` since the same session file path is rewritten after each message
