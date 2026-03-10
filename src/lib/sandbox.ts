@@ -297,6 +297,319 @@ main().catch(err => {
 `;
 }
 
+// --- Session Sandbox ---
+
+export interface SessionSandboxConfig {
+  agent: SandboxConfig["agent"];
+  tenantId: string;
+  sessionId: string;
+  platformApiUrl: string;
+  aiGatewayApiKey: string;
+  mcpServers?: Record<string, McpServerConfig>;
+  mcpErrors?: string[];
+  pluginFiles?: Array<{ path: string; content: string }>;
+  maxIdleTimeoutMs?: number; // default 30 min
+}
+
+export interface SessionSandboxInstance extends SandboxInstance {
+  sandboxRef: Sandbox;
+  runMessage(opts: {
+    prompt: string;
+    sdkSessionId: string | null;
+    runId: string;
+    runToken: string;
+    maxTurns: number;
+    maxBudgetUsd: number;
+  }): Promise<{ logs: () => AsyncIterable<string> }>;
+  extendTimeout(ms: number): Promise<void>;
+  writeSessionFile(content: Buffer): Promise<void>;
+  readSessionFile(): Promise<Buffer | null>;
+}
+
+const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const SESSION_FILE_PATH = "/vercel/sandbox/.claude/session.jsonl";
+
+export async function createSessionSandbox(config: SessionSandboxConfig): Promise<SessionSandboxInstance> {
+  const sourceConfig = config.agent.git_repo_url
+    ? {
+        type: "git" as const,
+        url: config.agent.git_repo_url,
+        depth: 1,
+        revision: config.agent.git_branch || "main",
+      }
+    : undefined;
+
+  logger.info("Creating session sandbox", {
+    session_id: config.sessionId,
+    agent_id: config.agent.id,
+    tenant_id: config.tenantId,
+  });
+
+  const mcpHostnames = Object.values(config.mcpServers ?? {}).map(
+    (s) => new URL(s.url).hostname,
+  );
+
+  const timeoutMs = config.maxIdleTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
+
+  const sandbox = await Sandbox.create({
+    runtime: "node22",
+    resources: { vcpus: 2 },
+    timeout: timeoutMs,
+    ...(sourceConfig ? { source: sourceConfig } : {}),
+    networkPolicy: {
+      allow: [
+        "ai-gateway.vercel.sh",
+        "*.composio.dev",
+        "*.firecrawl.dev",
+        "*.githubusercontent.com",
+        "registry.npmjs.org",
+        new URL(config.platformApiUrl).hostname,
+        ...mcpHostnames,
+      ],
+    },
+  });
+
+  // Write skill files
+  const skillsRoot = "/vercel/sandbox/.claude/skills";
+  const skillFiles = config.agent.skills.flatMap((skill) =>
+    skill.files.map((file) => {
+      const resolved = path.resolve(skillsRoot, skill.folder, file.path);
+      if (!resolved.startsWith(skillsRoot + "/")) {
+        throw new Error(`Skill path escapes skills root: ${skill.folder}/${file.path}`);
+      }
+      return { path: resolved, content: Buffer.from(file.content) };
+    }),
+  );
+
+  const sandboxRoot = "/vercel/sandbox";
+  const pluginFiles = (config.pluginFiles ?? []).map((f) => {
+    const resolved = path.resolve(sandboxRoot, f.path);
+    if (!resolved.startsWith(sandboxRoot + "/")) {
+      throw new Error(`Plugin path escapes sandbox root: ${f.path}`);
+    }
+    return { path: resolved, content: Buffer.from(f.content) };
+  });
+
+  // Write skill + plugin files (no runner yet)
+  if (skillFiles.length > 0 || pluginFiles.length > 0) {
+    await sandbox.writeFiles([...skillFiles, ...pluginFiles]);
+  }
+
+  // Install Claude Agent SDK
+  const installCmd = await sandbox.runCommand({
+    cmd: "npm",
+    args: ["install", "@anthropic-ai/claude-agent-sdk"],
+  });
+  const installErrors = await installCmd.stderr();
+  if (installCmd.exitCode !== 0) {
+    logger.error("SDK install failed in session sandbox", {
+      exitCode: installCmd.exitCode,
+      stderr: installErrors.slice(0, 1000),
+    });
+  }
+
+  logger.info("Session sandbox created", {
+    session_id: config.sessionId,
+    sandbox_id: sandbox.sandboxId,
+  });
+
+  const hasMcp = config.mcpServers && Object.keys(config.mcpServers).length > 0;
+  const hasSkills = config.agent.skills.length > 0;
+  const hasPluginContent = (config.pluginFiles ?? []).length > 0;
+
+  // Build base env for all messages
+  const baseEnv: Record<string, string> = {
+    AGENTPLANE_AGENT_ID: config.agent.id,
+    AGENTPLANE_TENANT_ID: config.tenantId,
+    AGENTPLANE_PLATFORM_URL: config.platformApiUrl,
+    ANTHROPIC_BASE_URL: "https://ai-gateway.vercel.sh",
+    ANTHROPIC_AUTH_TOKEN: config.aiGatewayApiKey,
+    ANTHROPIC_API_KEY: "",
+    ENABLE_TOOL_SEARCH: "true",
+  };
+  if (hasMcp) {
+    baseEnv.MCP_SERVERS_JSON = JSON.stringify(config.mcpServers);
+  }
+
+  return {
+    id: sandbox.sandboxId,
+    sandboxRef: sandbox,
+    stop: async () => {
+      try {
+        await sandbox.stop();
+      } catch (err) {
+        logger.warn("Failed to stop session sandbox", {
+          sandbox_id: sandbox.sandboxId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    logs: () => ({ [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true as const, value: "" }) }) }),
+    extendTimeout: async (ms: number) => {
+      try {
+        await sandbox.extendTimeout(ms);
+      } catch (err) {
+        logger.warn("Failed to extend sandbox timeout", {
+          sandbox_id: sandbox.sandboxId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    writeSessionFile: async (content: Buffer) => {
+      await sandbox.writeFiles([{ path: SESSION_FILE_PATH, content }]);
+    },
+    readSessionFile: async () => {
+      try {
+        return await sandbox.readFileToBuffer({ path: SESSION_FILE_PATH });
+      } catch {
+        return null;
+      }
+    },
+    runMessage: async (opts) => {
+      const runnerScript = buildSessionRunnerScript({
+        agent: config.agent,
+        prompt: opts.prompt,
+        sdkSessionId: opts.sdkSessionId,
+        maxTurns: opts.maxTurns,
+        maxBudgetUsd: opts.maxBudgetUsd,
+        hasSkillsOrPlugins: hasSkills || hasPluginContent,
+        hasMcp: !!hasMcp,
+        mcpErrors: config.mcpErrors ?? [],
+      });
+
+      const runnerFilename = `runner-${opts.runId}.mjs`;
+      await sandbox.writeFiles([
+        { path: `/vercel/sandbox/${runnerFilename}`, content: Buffer.from(runnerScript) },
+      ]);
+
+      const env = {
+        ...baseEnv,
+        AGENTPLANE_RUN_ID: opts.runId,
+        AGENTPLANE_RUN_TOKEN: opts.runToken,
+      };
+
+      const command = await sandbox.runCommand({
+        cmd: "node",
+        args: [runnerFilename],
+        env,
+        detached: true,
+      });
+
+      return {
+        logs: () => streamLogs(command),
+      };
+    },
+  };
+}
+
+interface SessionRunnerConfig {
+  agent: SandboxConfig["agent"];
+  prompt: string;
+  sdkSessionId: string | null;
+  maxTurns: number;
+  maxBudgetUsd: number;
+  hasSkillsOrPlugins: boolean;
+  hasMcp: boolean;
+  mcpErrors: string[];
+}
+
+function buildSessionRunnerScript(config: SessionRunnerConfig): string {
+  const agentConfig = {
+    model: config.agent.model,
+    permissionMode: config.agent.permission_mode,
+    // Don't restrict allowedTools when MCP servers are present
+    ...(config.hasMcp ? {} : { allowedTools: config.agent.allowed_tools }),
+    maxTurns: config.maxTurns,
+    maxBudgetUsd: config.maxBudgetUsd,
+    ...(config.hasSkillsOrPlugins ? { settingSources: ["project"] } : {}),
+    includePartialMessages: true,
+  };
+
+  return `
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { writeFileSync, appendFileSync } from 'fs';
+
+const config = ${JSON.stringify(agentConfig)};
+const prompt = ${JSON.stringify(config.prompt)};
+const sdkSessionId = ${JSON.stringify(config.sdkSessionId)};
+
+const mcpServers = process.env.MCP_SERVERS_JSON
+  ? JSON.parse(process.env.MCP_SERVERS_JSON)
+  : {};
+
+const transcriptPath = '/vercel/sandbox/transcript.ndjson';
+writeFileSync(transcriptPath, '');
+
+function emit(event) {
+  const line = JSON.stringify(event);
+  console.log(line);
+  appendFileSync(transcriptPath, line + '\\n');
+}
+
+async function main() {
+  emit({
+    type: 'run_started',
+    run_id: process.env.AGENTPLANE_RUN_ID,
+    agent_id: process.env.AGENTPLANE_AGENT_ID,
+    model: config.model,
+    timestamp: new Date().toISOString(),
+    session_id: sdkSessionId,
+    mcp_server_count: Object.keys(mcpServers).length,
+    mcp_errors: ${JSON.stringify(config.mcpErrors)},
+  });
+
+  const options = {
+    ...config,
+    ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+    ...(sdkSessionId ? { resume: sdkSessionId } : {}),
+  };
+
+  try {
+    for await (const message of query({ prompt, options })) {
+      if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
+        emit({ type: 'session_info', sdk_session_id: message.session_id });
+      }
+      if (message.type === 'stream_event') {
+        const ev = message.event;
+        if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+          console.log(JSON.stringify({ type: 'text_delta', text: ev.delta.text }));
+        }
+      } else {
+        emit(message);
+      }
+    }
+  } catch (err) {
+    emit({
+      type: 'error',
+      error: err.message || String(err),
+      code: 'execution_error',
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Upload transcript for detached runs
+  if (process.env.AGENTPLANE_PLATFORM_URL && process.env.AGENTPLANE_RUN_TOKEN) {
+    try {
+      const { readFileSync } = await import('fs');
+      const transcript = readFileSync(transcriptPath);
+      await fetch(process.env.AGENTPLANE_PLATFORM_URL + '/api/internal/runs/' + process.env.AGENTPLANE_RUN_ID + '/transcript', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + process.env.AGENTPLANE_RUN_TOKEN,
+          'Content-Type': 'application/x-ndjson',
+        },
+        body: transcript,
+      });
+    } catch (err) {
+      console.error('Failed to upload transcript:', err.message);
+    }
+  }
+}
+
+main().catch(err => { console.error('Runner fatal error:', err); process.exit(1); });
+`;
+}
+
 export async function reconnectSandbox(sandboxId: string): Promise<SandboxInstance | null> {
   try {
     const sandbox = await Sandbox.get({ sandboxId });
@@ -304,6 +617,104 @@ export async function reconnectSandbox(sandboxId: string): Promise<SandboxInstan
       id: sandbox.sandboxId,
       stop: () => sandbox.stop(),
       logs: () => ({ [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true as const, value: "" }) }) }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function reconnectSessionSandbox(
+  sandboxId: string,
+  config: SessionSandboxConfig,
+): Promise<SessionSandboxInstance | null> {
+  try {
+    const sandbox = await Sandbox.get({ sandboxId });
+
+    const hasMcp = config.mcpServers && Object.keys(config.mcpServers).length > 0;
+    const hasSkills = config.agent.skills.length > 0;
+    const hasPluginContent = (config.pluginFiles ?? []).length > 0;
+
+    const baseEnv: Record<string, string> = {
+      AGENTPLANE_AGENT_ID: config.agent.id,
+      AGENTPLANE_TENANT_ID: config.tenantId,
+      AGENTPLANE_PLATFORM_URL: config.platformApiUrl,
+      ANTHROPIC_BASE_URL: "https://ai-gateway.vercel.sh",
+      ANTHROPIC_AUTH_TOKEN: config.aiGatewayApiKey,
+      ANTHROPIC_API_KEY: "",
+      ENABLE_TOOL_SEARCH: "true",
+    };
+    if (hasMcp) {
+      baseEnv.MCP_SERVERS_JSON = JSON.stringify(config.mcpServers);
+    }
+
+    return {
+      id: sandbox.sandboxId,
+      sandboxRef: sandbox,
+      stop: async () => {
+        try {
+          await sandbox.stop();
+        } catch (err) {
+          logger.warn("Failed to stop session sandbox", {
+            sandbox_id: sandbox.sandboxId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+      logs: () => ({ [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true as const, value: "" }) }) }),
+      extendTimeout: async (ms: number) => {
+        try {
+          await sandbox.extendTimeout(ms);
+        } catch (err) {
+          logger.warn("Failed to extend sandbox timeout", {
+            sandbox_id: sandbox.sandboxId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+      writeSessionFile: async (content: Buffer) => {
+        await sandbox.writeFiles([{ path: SESSION_FILE_PATH, content }]);
+      },
+      readSessionFile: async () => {
+        try {
+          return await sandbox.readFileToBuffer({ path: SESSION_FILE_PATH });
+        } catch {
+          return null;
+        }
+      },
+      runMessage: async (opts) => {
+        const runnerScript = buildSessionRunnerScript({
+          agent: config.agent,
+          prompt: opts.prompt,
+          sdkSessionId: opts.sdkSessionId,
+          maxTurns: opts.maxTurns,
+          maxBudgetUsd: opts.maxBudgetUsd,
+          hasSkillsOrPlugins: hasSkills || hasPluginContent,
+          hasMcp: !!hasMcp,
+          mcpErrors: config.mcpErrors ?? [],
+        });
+
+        const runnerFilename = `runner-${opts.runId}.mjs`;
+        await sandbox.writeFiles([
+          { path: `/vercel/sandbox/${runnerFilename}`, content: Buffer.from(runnerScript) },
+        ]);
+
+        const env = {
+          ...baseEnv,
+          AGENTPLANE_RUN_ID: opts.runId,
+          AGENTPLANE_RUN_TOKEN: opts.runToken,
+        };
+
+        const command = await sandbox.runCommand({
+          cmd: "node",
+          args: [runnerFilename],
+          env,
+          detached: true,
+        });
+
+        return {
+          logs: () => streamLogs(command),
+        };
+      },
     };
   } catch {
     return null;
