@@ -91,28 +91,43 @@ export async function buildMcpConfig(
       const mcpServers = await getMcpServersByIds(serverIds);
       const serverMap = new Map(mcpServers.map((s) => [s.id, s]));
 
-      for (const conn of connections) {
-        const server = serverMap.get(conn.mcp_server_id);
-        if (!server) continue;
+      // Refresh all MCP tokens in parallel for faster cold starts
+      const tokenResults = await Promise.allSettled(
+        connections.map(async (conn) => {
+          const server = serverMap.get(conn.mcp_server_id);
+          if (!server) return null;
+          try {
+            const accessToken = await getOrRefreshToken(conn, tenantId as TenantId);
+            return { conn, server, accessToken };
+          } catch (err) {
+            // Re-throw with connection context so we can mark it failed
+            throw { conn, server, error: err };
+          }
+        }),
+      );
 
-        try {
-          const accessToken = await getOrRefreshToken(conn, tenantId as TenantId);
+      for (const result of tokenResults) {
+        if (result.status === "fulfilled" && result.value) {
+          const { server, accessToken } = result.value;
           const mcpUrl = new URL(server.mcp_endpoint_path, server.base_url).toString();
-
           servers[server.slug] = {
             type: "http",
             url: mcpUrl,
             headers: { Authorization: `Bearer ${accessToken}` },
           };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          errors.push(`MCP server "${server.name}": ${msg}`);
+        } else if (result.status === "rejected") {
+          const { conn, server, error } = result.reason as {
+            conn: typeof connections[0];
+            server: typeof mcpServers[0] | undefined;
+            error: unknown;
+          };
+          const msg = error instanceof Error ? error.message : String(error);
+          errors.push(`MCP server "${server?.name ?? "unknown"}": ${msg}`);
           logger.warn("Failed to build custom MCP config", {
             agent_id: agent.id,
-            mcp_server_id: server.id,
+            mcp_server_id: server?.id,
             error: msg,
           });
-          // Mark the connection as failed so the dashboard shows a warning
           await markConnectionFailed(
             conn.id as McpConnectionId,
             tenantId as TenantId,
