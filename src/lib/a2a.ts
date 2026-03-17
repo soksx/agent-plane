@@ -313,7 +313,15 @@ export class SandboxAgentExecutor implements AgentExecutor {
         throw A2AError.invalidParams("Invalid task ID format");
       }
 
-      // Publish immediate "working" status
+      // Publish initial task event — required by SDK to set currentTask
+      eventBus.publish({
+        kind: "task",
+        id: taskId,
+        contextId: requestContext.contextId,
+        status: { state: "working", timestamp: new Date().toISOString() },
+      } as unknown as Task);
+
+      // Publish "working" status update
       eventBus.publish({
         kind: "status-update",
         taskId,
