@@ -100,7 +100,8 @@ function buildConversation(events: TranscriptEvent[]): ConversationItem[] {
     } else if (event.type === "a2a_incoming") {
       items.push({
         role: "a2a_incoming",
-        sender: String(event.sender || "unknown"),
+        sender: String(event.agent_name || event.sender || "unknown"),
+        text: event.prompt_preview ? String(event.prompt_preview) : undefined,
         callbackUrl: event.callback_url ? String(event.callback_url) : undefined,
         timestamp: event.timestamp ? String(event.timestamp) : undefined,
       });
@@ -166,18 +167,26 @@ function ConversationView({ items }: { items: ConversationItem[] }) {
 }
 
 function A2AIncomingItem({ item }: { item: ConversationItem }) {
+  const [expanded, setExpanded] = useState(false);
   return (
-    <div className="rounded-md border border-border bg-muted/30 px-4 py-3">
-      <div className="flex items-center gap-2">
+    <div className="rounded-md border border-border bg-muted/30 overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-4 py-2 text-left hover:bg-muted/50 transition-colors"
+      >
         <Badge variant="outline" className="text-[10px]">A2A incoming</Badge>
-        <span className="text-xs text-muted-foreground">from <span className="font-mono">{item.sender}</span></span>
-        {item.timestamp && (
-          <span className="text-xs text-muted-foreground ml-auto">{new Date(item.timestamp).toLocaleTimeString()}</span>
+        <span className="text-xs text-muted-foreground">to <span className="font-medium text-foreground">{item.sender}</span></span>
+        {item.callbackUrl && (
+          <span className="text-xs text-muted-foreground truncate">via <span className="font-mono">{new URL(item.callbackUrl).hostname}</span></span>
         )}
-      </div>
-      {item.callbackUrl && (
-        <div className="mt-1 text-xs text-muted-foreground">
-          Callback: <span className="font-mono">{item.callbackUrl}</span>
+        {item.timestamp && (
+          <span className="text-xs text-muted-foreground ml-auto flex-shrink-0">{new Date(item.timestamp).toLocaleTimeString()}</span>
+        )}
+        <span className="text-xs text-muted-foreground flex-shrink-0">{expanded ? "▲" : "▼"}</span>
+      </button>
+      {expanded && item.text && (
+        <div className="px-4 py-3 border-t border-border bg-muted/10">
+          <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground">{item.text}</pre>
         </div>
       )}
     </div>

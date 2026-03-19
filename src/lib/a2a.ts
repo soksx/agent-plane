@@ -497,14 +497,15 @@ export class SandboxAgentExecutor implements AgentExecutor {
       );
 
       // Log incoming A2A message as the first transcript event
+      const promptPreview = prompt.split("\n").slice(0, 5).join("\n").slice(0, 500);
       const a2aIncomingEvent = JSON.stringify({
         type: "a2a_incoming",
         run_id: run.id,
         context_id: requestContext.contextId,
         task_id: taskId,
+        agent_name: agent.name,
         sender: this.deps.createdByKeyId ?? "unknown",
-        text_parts: textParts.length,
-        data_parts: dataParts.length,
+        prompt_preview: promptPreview,
         has_callback: !!cb,
         callback_url: callbackUrl,
         timestamp: new Date().toISOString(),
