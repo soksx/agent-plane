@@ -2,6 +2,9 @@ import path from "path";
 import { Sandbox, Snapshot, type Command } from "@vercel/sandbox";
 import { logger } from "./logger";
 import type { McpServerConfig, CallbackData } from "./mcp";
+import { resolveEffectiveRunner } from "./models";
+import type { RunnerType } from "./models";
+import { buildVercelAiRunnerScript } from "./runners/vercel-ai-runner";
 
 // --- SDK Snapshot Cache ---
 // Pre-built snapshot with @anthropic-ai/claude-agent-sdk installed.
@@ -70,7 +73,7 @@ export async function refreshSdkSnapshot(): Promise<{ snapshotId: string; cleane
 
   const installCmd = await sandbox.runCommand({
     cmd: "npm",
-    args: ["install", "@anthropic-ai/claude-agent-sdk"],
+    args: ["install", "@anthropic-ai/claude-agent-sdk", "ai", "@ai-sdk/mcp", "@modelcontextprotocol/sdk", "zod"],
   });
   if (installCmd.exitCode !== 0) {
     const stderr = await installCmd.stderr();
@@ -116,9 +119,11 @@ export interface SandboxConfig {
   agent: {
     id: string;
     name: string;
+    description?: string | null;
     git_repo_url: string | null;
     git_branch: string;
     model: string;
+    runner: RunnerType | null;
     permission_mode: string;
     allowed_tools: string[];
     max_turns: number;
@@ -185,11 +190,11 @@ async function createSandboxFromSnapshot(opts: {
   return sandbox;
 }
 
-/** Install the Claude Agent SDK in a sandbox. */
+/** Install SDKs (Claude Agent SDK + Vercel AI SDK) in a sandbox. */
 async function installSdk(sandbox: Sandbox, contextId: string): Promise<void> {
   const installCmd = await sandbox.runCommand({
     cmd: "npm",
-    args: ["install", "@anthropic-ai/claude-agent-sdk"],
+    args: ["install", "@anthropic-ai/claude-agent-sdk", "ai", "@ai-sdk/mcp", "@modelcontextprotocol/sdk", "zod"],
   });
   if (installCmd.exitCode !== 0) {
     const installErrors = await installCmd.stderr();
@@ -256,8 +261,11 @@ export async function createSandbox(config: SandboxConfig): Promise<SandboxInsta
     await installSdk(sandbox, config.runId);
   }
 
-  // Build the runner script
-  const runnerScript = buildRunnerScript(config);
+  // Build the runner script based on effective runner type
+  const effectiveRunner = resolveEffectiveRunner(config.agent.model, config.agent.runner);
+  const runnerScript = effectiveRunner === "vercel-ai-sdk"
+    ? buildVercelAiRunnerScript(config)
+    : buildRunnerScript(config);
 
   // Write skill files into .claude/skills/<folder>/
   const skillsRoot = "/vercel/sandbox/.claude/skills";
