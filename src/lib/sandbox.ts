@@ -367,10 +367,6 @@ if (process.env.AGENTCO_CALLBACK_URL) {
   mcpServers['agentco'] = {
     command: 'node',
     args: ['/vercel/sandbox/agentco-bridge.mjs'],
-    env: {
-      AGENTCO_CALLBACK_URL: process.env.AGENTCO_CALLBACK_URL,
-      AGENTCO_CALLBACK_TOKEN: process.env.AGENTCO_CALLBACK_TOKEN || '',
-    },
   };
 }
 `;
