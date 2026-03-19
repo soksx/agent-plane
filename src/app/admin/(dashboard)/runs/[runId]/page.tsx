@@ -5,6 +5,7 @@ import { MetricCard } from "@/components/ui/metric-card";
 import { RunStatusBadge } from "@/components/ui/run-status-badge";
 import { DetailPageHeader } from "@/components/ui/detail-page-header";
 import { LocalDate } from "@/components/local-date";
+import { z } from "zod";
 import { queryOne } from "@/db";
 import { RunRow } from "@/lib/validation";
 import { TranscriptViewer } from "./transcript-viewer";
@@ -24,6 +25,17 @@ export default async function RunDetailPage({
 
   const run = await queryOne(RunRow, "SELECT * FROM runs WHERE id = $1", [runId]);
   if (!run) notFound();
+
+  // For A2A runs, resolve the requesting API key name
+  let requestedByKeyName: string | null = null;
+  if (run.triggered_by === "a2a" && run.created_by_key_id) {
+    const keyRow = await queryOne(
+      z.object({ name: z.string() }),
+      "SELECT name FROM api_keys WHERE id = $1",
+      [run.created_by_key_id],
+    );
+    requestedByKeyName = keyRow?.name ?? null;
+  }
 
   // Fetch transcript
   let transcript: { type: string; [key: string]: unknown }[] = [];
@@ -64,6 +76,14 @@ export default async function RunDetailPage({
           ) : undefined
         }
       />
+
+      {/* A2A request origin */}
+      {run.triggered_by === "a2a" && requestedByKeyName && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Badge variant="outline" className="text-[10px]">A2A</Badge>
+          <span>Requested by <span className="font-medium text-foreground">{requestedByKeyName}</span></span>
+        </div>
+      )}
 
       {/* Metadata cards */}
       <div className={`grid gap-4 ${run.result_summary ? "grid-cols-5" : "grid-cols-4"}`}>
