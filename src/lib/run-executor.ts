@@ -21,6 +21,8 @@ export interface RunExecutionParams {
   maxRuntimeSeconds: number;
   /** Additional hostnames to allow in the sandbox network policy (e.g. A2A callback URLs). */
   extraAllowedHostnames?: string[];
+  /** AgentCo callback data for MCP bridge injection. */
+  callbackData?: { url: string; token: string; tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }> };
 }
 
 export interface RunExecutionResult {
@@ -37,7 +39,7 @@ export interface RunExecutionResult {
 export async function prepareRunExecution(
   params: RunExecutionParams,
 ): Promise<RunExecutionResult> {
-  const { agent, tenantId, runId, prompt, platformApiUrl, effectiveBudget, effectiveMaxTurns, maxRuntimeSeconds, extraAllowedHostnames } = params;
+  const { agent, tenantId, runId, prompt, platformApiUrl, effectiveBudget, effectiveMaxTurns, maxRuntimeSeconds, extraAllowedHostnames, callbackData } = params;
 
   const [mcpResult, pluginResult] = await Promise.all([
     buildMcpConfig(agent, tenantId),
@@ -66,6 +68,7 @@ export async function prepareRunExecution(
     mcpErrors: mcpResult.errors,
     pluginFiles: [...pluginResult.skillFiles, ...pluginResult.agentFiles],
     extraAllowedHostnames,
+    callbackData,
   });
 
   await transitionRunStatus(runId, tenantId, "pending", "running", {

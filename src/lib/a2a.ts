@@ -456,14 +456,8 @@ export class SandboxAgentExecutor implements AgentExecutor {
         : undefined;
       const callbackUrl = cb?.callback_url as string | undefined;
 
-      // Build prompt: text parts + serialized callback data so the agent can use it
-      let prompt = textParts.map((p) => p.text).join("\n");
-      if (cb) {
-        prompt += `\n\n## Callback Connection\ncallback_url: ${cb.callback_url}\ncallback_token: ${cb.callback_token}\n`;
-        if (cb.available_tools) {
-          prompt += `\navailable_tools:\n${JSON.stringify(cb.available_tools, null, 2)}\n`;
-        }
-      }
+      // Build prompt from text parts (callback data is handled via MCP bridge, not prompt text)
+      const prompt = textParts.map((p) => p.text).join("\n");
 
       // Extract callback hostname for network policy
       let callbackHostname: string | undefined;
@@ -522,6 +516,11 @@ export class SandboxAgentExecutor implements AgentExecutor {
         effectiveMaxTurns: agent.max_turns,
         maxRuntimeSeconds: agent.max_runtime_seconds,
         extraAllowedHostnames: callbackHostname ? [callbackHostname] : [],
+        callbackData: cb ? {
+          url: callbackUrl!,
+          token: cb.callback_token as string,
+          tools: cb.available_tools as Array<{ name: string; description: string; parameters: Record<string, unknown> }>,
+        } : undefined,
       });
 
       // Inject the A2A incoming event as the first transcript entry

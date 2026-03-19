@@ -137,6 +137,8 @@ export interface SandboxConfig {
   pluginFiles?: Array<{ path: string; content: string }>;
   /** Additional hostnames to allow in the sandbox network policy (e.g. A2A callback URLs). */
   extraAllowedHostnames?: string[];
+  /** AgentCo callback data for MCP bridge injection. */
+  callbackData?: { url: string; token: string; tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }> };
 }
 
 export interface SandboxInstance {
@@ -209,9 +211,9 @@ export async function createSandbox(config: SandboxConfig): Promise<SandboxInsta
   });
 
   // Extract hostnames from custom MCP servers for network policy
-  const mcpHostnames = Object.values(config.mcpServers ?? {}).map(
-    (s) => new URL(s.url).hostname,
-  );
+  const mcpHostnames = Object.values(config.mcpServers ?? {})
+    .filter((s): s is Extract<typeof s, { url: string }> => "url" in s)
+    .map((s) => new URL(s.url).hostname);
 
   const networkPolicy = {
     allow: [
@@ -280,11 +282,21 @@ export async function createSandbox(config: SandboxConfig): Promise<SandboxInsta
     return { path: resolved, content: Buffer.from(f.content) };
   });
 
-  // Write runner + skill + plugin files to sandbox
+  // Build AgentCo bridge files if callback data is present
+  const bridgeFiles: Array<{ path: string; content: Buffer }> = [];
+  if (config.callbackData && config.callbackData.tools.length > 0) {
+    bridgeFiles.push(
+      { path: "/vercel/sandbox/agentco-bridge.mjs", content: Buffer.from(buildBridgeScript()) },
+      { path: "/vercel/sandbox/agentco-tools.json", content: Buffer.from(JSON.stringify(config.callbackData.tools)) },
+    );
+  }
+
+  // Write runner + skill + plugin + bridge files to sandbox
   await sandbox.writeFiles([
     { path: "/vercel/sandbox/runner.mjs", content: Buffer.from(runnerScript) },
     ...skillFiles,
     ...pluginFiles,
+    ...bridgeFiles,
   ]);
 
   // Build env vars for the runner command
@@ -305,6 +317,10 @@ export async function createSandbox(config: SandboxConfig): Promise<SandboxInsta
   }
   if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
     env.MCP_SERVERS_JSON = JSON.stringify(config.mcpServers);
+  }
+  if (config.callbackData && config.callbackData.tools.length > 0) {
+    env.AGENTCO_CALLBACK_URL = config.callbackData.url;
+    env.AGENTCO_CALLBACK_TOKEN = config.callbackData.token;
   }
 
   // Start the runner in detached mode
@@ -334,6 +350,180 @@ export async function createSandbox(config: SandboxConfig): Promise<SandboxInsta
     },
     logs: () => streamLogs(command),
   };
+}
+
+/**
+ * Build the AgentCo callback bridge — a stdio MCP server that translates
+ * MCP tools/call into A2A JSON-RPC message/send to AgentCo's callback URL.
+ * Reads config from env vars (AGENTCO_CALLBACK_URL, AGENTCO_CALLBACK_TOKEN)
+ * and tool schemas from agentco-tools.json.
+ */
+function buildBridgeScript(): string {
+  return `import { createInterface } from 'readline';
+import { readFileSync } from 'fs';
+
+const callbackUrl = process.env.AGENTCO_CALLBACK_URL;
+const callbackToken = process.env.AGENTCO_CALLBACK_TOKEN;
+
+// Load tool schemas from file (written by sandbox setup)
+const rawTools = JSON.parse(readFileSync('agentco-tools.json', 'utf-8'));
+const tools = rawTools.map(t => ({
+  name: t.name,
+  description: t.description || '',
+  inputSchema: { type: 'object', ...t.parameters },
+}));
+
+const rl = createInterface({ input: process.stdin, terminal: false });
+
+function send(msg) {
+  process.stdout.write(JSON.stringify(msg) + '\\n');
+}
+
+function sendResult(id, result) {
+  send({ jsonrpc: '2.0', id, result });
+}
+
+function sendError(id, code, message) {
+  send({ jsonrpc: '2.0', id, error: { code, message } });
+}
+
+async function handleToolCall(id, params) {
+  const { name, arguments: args } = params;
+
+  const body = {
+    jsonrpc: '2.0',
+    id: crypto.randomUUID(),
+    method: 'message/send',
+    params: {
+      message: {
+        messageId: crypto.randomUUID(),
+        role: 'user',
+        parts: [
+          {
+            kind: 'data',
+            data: { tool: name, arguments: args || {} },
+            mediaType: 'application/json',
+          },
+        ],
+      },
+    },
+  };
+
+  try {
+    const res = await fetch(callbackUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + callbackToken,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      sendResult(id, {
+        content: [{ type: 'text', text: 'AgentCo error (' + res.status + '): ' + text.slice(0, 500) }],
+        isError: true,
+      });
+      return;
+    }
+
+    const data = await res.json();
+
+    if (data.error) {
+      sendResult(id, {
+        content: [{ type: 'text', text: 'AgentCo error: ' + (data.error.message || JSON.stringify(data.error)) }],
+        isError: true,
+      });
+      return;
+    }
+
+    // Extract result from A2A response
+    const result = data.result;
+    let text = '';
+
+    // Try artifacts first (task response)
+    if (result?.artifacts) {
+      for (const artifact of result.artifacts) {
+        for (const part of artifact.parts || []) {
+          if (part.kind === 'text' && part.text) text += part.text;
+          if (part.kind === 'data' && part.data) {
+            text += JSON.stringify(part.data.result ?? part.data, null, 2);
+          }
+        }
+      }
+    }
+
+    // Try direct message parts
+    if (!text && result?.parts) {
+      for (const part of result.parts) {
+        if (part.kind === 'text' && part.text) text += part.text;
+        if (part.kind === 'data' && part.data) {
+          text += JSON.stringify(part.data.result ?? part.data, null, 2);
+        }
+      }
+    }
+
+    // Fallback: stringify the whole result
+    if (!text) {
+      text = JSON.stringify(result, null, 2);
+    }
+
+    sendResult(id, { content: [{ type: 'text', text }] });
+  } catch (err) {
+    sendResult(id, {
+      content: [{ type: 'text', text: 'Bridge error: ' + (err.message || String(err)) }],
+      isError: true,
+    });
+  }
+}
+
+rl.on('line', async (line) => {
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return; // Ignore malformed input
+  }
+
+  const { id, method, params } = msg;
+
+  switch (method) {
+    case 'initialize':
+      sendResult(id, {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'agentco-bridge', version: '1.0.0' },
+      });
+      break;
+
+    case 'notifications/initialized':
+      // No response needed for notifications
+      break;
+
+    case 'ping':
+      sendResult(id, {});
+      break;
+
+    case 'tools/list':
+      sendResult(id, { tools });
+      break;
+
+    case 'tools/call':
+      await handleToolCall(id, params);
+      break;
+
+    default:
+      if (id) {
+        sendError(id, -32601, 'Method not found: ' + method);
+      }
+      break;
+  }
+});
+
+rl.on('close', () => process.exit(0));
+`;
 }
 
 async function* streamLogs(command: Command): AsyncIterable<string> {
@@ -378,6 +568,19 @@ const runToken = process.env.AGENT_PLANE_RUN_TOKEN;
 const mcpServers = process.env.MCP_SERVERS_JSON
   ? JSON.parse(process.env.MCP_SERVERS_JSON)
   : {};
+
+// Register AgentCo callback bridge as stdio MCP server
+if (process.env.AGENTCO_CALLBACK_URL) {
+  mcpServers['agentco'] = {
+    type: 'stdio',
+    command: 'node',
+    args: ['agentco-bridge.mjs'],
+    env: {
+      AGENTCO_CALLBACK_URL: process.env.AGENTCO_CALLBACK_URL,
+      AGENTCO_CALLBACK_TOKEN: process.env.AGENTCO_CALLBACK_TOKEN || '',
+    },
+  };
+}
 
 const transcriptPath = '/vercel/sandbox/transcript.ndjson';
 writeFileSync(transcriptPath, '');
@@ -508,9 +711,9 @@ export async function createSessionSandbox(config: SessionSandboxConfig): Promis
     tenant_id: config.tenantId,
   });
 
-  const mcpHostnames = Object.values(config.mcpServers ?? {}).map(
-    (s) => new URL(s.url).hostname,
-  );
+  const mcpHostnames = Object.values(config.mcpServers ?? {})
+    .filter((s): s is Extract<typeof s, { url: string }> => "url" in s)
+    .map((s) => new URL(s.url).hostname);
 
   const timeoutMs = config.maxIdleTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
 
@@ -729,6 +932,19 @@ const sdkSessionId = ${JSON.stringify(config.sdkSessionId)};
 const mcpServers = process.env.MCP_SERVERS_JSON
   ? JSON.parse(process.env.MCP_SERVERS_JSON)
   : {};
+
+// Register AgentCo callback bridge as stdio MCP server
+if (process.env.AGENTCO_CALLBACK_URL) {
+  mcpServers['agentco'] = {
+    type: 'stdio',
+    command: 'node',
+    args: ['agentco-bridge.mjs'],
+    env: {
+      AGENTCO_CALLBACK_URL: process.env.AGENTCO_CALLBACK_URL,
+      AGENTCO_CALLBACK_TOKEN: process.env.AGENTCO_CALLBACK_TOKEN || '',
+    },
+  };
+}
 
 const transcriptPath = '/vercel/sandbox/transcript.ndjson';
 writeFileSync(transcriptPath, '');

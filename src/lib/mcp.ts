@@ -10,11 +10,9 @@ import {
 import type { AgentInternal } from "./validation";
 import type { AgentId, TenantId, McpServerId, McpConnectionId } from "./types";
 
-export interface McpServerConfig {
-  type: "http" | "sse";
-  url: string;
-  headers?: Record<string, string>;
-}
+export type McpServerConfig =
+  | { type: "http" | "sse"; url: string; headers?: Record<string, string> }
+  | { type: "stdio"; command: string; args: string[]; env?: Record<string, string> };
 
 export interface McpBuildResult {
   servers: Record<string, McpServerConfig>;
