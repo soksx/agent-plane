@@ -301,7 +301,7 @@ export function buildAgentExecution(mode: "oneshot" | "session"): string {
     });
 
     // Stream the agent's response
-    const result = agent.stream({ ${promptArg} });
+    const result = await agent.stream({ ${promptArg} });
 
     // Stream text (provider-agnostic)
     for await (const textPart of result.textStream) {
