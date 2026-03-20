@@ -44,10 +44,13 @@ export function AgentEditForm({ agent }: { agent: Agent }) {
     maxBudget !== agent.max_budget_usd.toString() ||
     maxRuntime !== Math.floor(agent.max_runtime_seconds / 60).toString();
 
+  const [error, setError] = useState("");
+
   async function handleSave() {
     setSaving(true);
+    setError("");
     try {
-      await fetch(`/api/admin/agents/${agent.id}`, {
+      const res = await fetch(`/api/admin/agents/${agent.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -56,11 +59,16 @@ export function AgentEditForm({ agent }: { agent: Agent }) {
           model,
           runner: runner || null,
           permission_mode: permissionMode,
-          max_turns: parseInt(maxTurns),
-          max_budget_usd: parseFloat(maxBudget),
-          max_runtime_seconds: parseInt(maxRuntime) * 60,
+          max_turns: parseInt(maxTurns) || agent.max_turns,
+          max_budget_usd: parseFloat(maxBudget) || agent.max_budget_usd,
+          max_runtime_seconds: (parseInt(maxRuntime) || Math.floor(agent.max_runtime_seconds / 60)) * 60,
         }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data?.error?.message ?? data?.error ?? `Error ${res.status}`);
+        return;
+      }
       router.refresh();
     } finally {
       setSaving(false);
@@ -70,6 +78,7 @@ export function AgentEditForm({ agent }: { agent: Agent }) {
   return (
     <div className="rounded-lg border border-muted-foreground/25 p-5">
       <SectionHeader title="Details">
+        {error && <span className="text-sm text-destructive mr-2">{error}</span>}
         <Button onClick={handleSave} disabled={saving || !isDirty} size="sm">
           {saving ? "Saving..." : "Save Changes"}
         </Button>
