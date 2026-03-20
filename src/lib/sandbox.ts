@@ -588,33 +588,13 @@ async function* streamLogs(command: Command): AsyncIterable<string> {
   if (buffer.trim()) yield buffer;
 }
 
-function buildRunnerScript(config: SandboxConfig): string {
-  const hasSkills = config.agent.skills.length > 0;
-  const hasPluginContent = (config.pluginFiles ?? []).length > 0;
-  const hasMcp = config.mcpServers && Object.keys(config.mcpServers).length > 0;
-  const hasCallback = config.callbackData && config.callbackData.tools.length > 0;
-  const agentConfig = {
-    model: config.agent.model,
-    permissionMode: config.agent.permission_mode,
-    // Don't restrict allowedTools when MCP servers are present,
-    // otherwise MCP tool names (mcp__*) get blocked
-    ...(hasMcp || hasCallback ? {} : { allowedTools: config.agent.allowed_tools }),
-    maxTurns: config.agent.max_turns,
-    maxBudgetUsd: config.agent.max_budget_usd,
-    ...((hasSkills || hasPluginContent) ? { settingSources: ["project"] } : {}),
-  };
+// --- Claude Agent SDK Runner Shared Snippets ---
 
+function claudeSdkPreamble(): string {
   return `
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { writeFileSync, appendFileSync } from 'fs';
 
-const config = ${JSON.stringify(agentConfig)};
-const prompt = ${JSON.stringify(config.prompt)};
-const runId = process.env.AGENT_PLANE_RUN_ID;
-const platformUrl = process.env.AGENT_PLANE_PLATFORM_URL;
-const runToken = process.env.AGENT_PLANE_RUN_TOKEN;
-
-// Build MCP servers config from JSON env var
 const mcpServers = process.env.MCP_SERVERS_JSON
   ? JSON.parse(process.env.MCP_SERVERS_JSON)
   : {};
@@ -627,46 +607,30 @@ function emit(event) {
   console.log(line);
   appendFileSync(transcriptPath, line + '\\n');
 }
+`;
+}
 
-async function main() {
-  emit({
-    type: 'run_started',
-    run_id: runId,
-    agent_id: process.env.AGENT_PLANE_AGENT_ID,
-    model: config.model,
-    timestamp: new Date().toISOString(),
-    mcp_server_count: Object.keys(mcpServers).length,
-    mcp_server_names: Object.keys(mcpServers),
-    mcp_errors: ${JSON.stringify(config.mcpErrors || [])},
-  });
-
-  try {
-    const options = {
-      model: config.model,
-      permissionMode: config.permissionMode,
-      ...(config.allowedTools ? { allowedTools: config.allowedTools } : {}),
-      maxTurns: config.maxTurns,
-      maxBudgetUsd: config.maxBudgetUsd,
-      ...(config.settingSources ? { settingSources: config.settingSources } : {}),
-      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-      includePartialMessages: true,
-    };
-
+function claudeSdkStreamLoop(): string {
+  return `
     for await (const message of query({ prompt, options })) {
-      // Log MCP server connection status from init event
-      if (message.type === 'system' && message.subtype === 'init' && message.mcp_servers) {
-        emit({ type: 'mcp_status', servers: message.mcp_servers });
+      if (message.type === 'system' && message.subtype === 'init') {
+        if (message.mcp_servers) emit({ type: 'mcp_status', servers: message.mcp_servers });
+        if (message.session_id) emit({ type: 'session_info', sdk_session_id: message.session_id });
       }
       if (message.type === 'stream_event') {
         const ev = message.event;
         if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-          // Stream text deltas to stdout only — not written to transcript
           console.log(JSON.stringify({ type: 'text_delta', text: ev.delta.text }));
         }
       } else {
         emit(message);
       }
     }
+`;
+}
+
+function claudeSdkErrorAndCleanup(): string {
+  return `
   } catch (err) {
     emit({
       type: 'error',
@@ -676,15 +640,14 @@ async function main() {
     });
   }
 
-  // Upload transcript for long-running/detached runs
-  if (platformUrl && runToken) {
+  if (process.env.AGENT_PLANE_PLATFORM_URL && process.env.AGENT_PLANE_RUN_TOKEN) {
     try {
       const { readFileSync } = await import('fs');
       const transcript = readFileSync(transcriptPath);
-      await fetch(platformUrl + '/api/internal/runs/' + runId + '/transcript', {
+      await fetch(process.env.AGENT_PLANE_PLATFORM_URL + '/api/internal/runs/' + process.env.AGENT_PLANE_RUN_ID + '/transcript', {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer ' + runToken,
+          'Authorization': 'Bearer ' + process.env.AGENT_PLANE_RUN_TOKEN,
           'Content-Type': 'application/x-ndjson',
         },
         body: transcript,
@@ -699,6 +662,51 @@ main().catch(err => {
   console.error('Runner fatal error:', err);
   process.exit(1);
 });
+`;
+}
+
+// --- Claude Agent SDK One-Shot Runner ---
+
+function buildRunnerScript(config: SandboxConfig): string {
+  const hasSkills = config.agent.skills.length > 0;
+  const hasPluginContent = (config.pluginFiles ?? []).length > 0;
+  const hasMcp = config.mcpServers && Object.keys(config.mcpServers).length > 0;
+  const hasCallback = config.callbackData && config.callbackData.tools.length > 0;
+  const agentConfig = {
+    model: config.agent.model,
+    permissionMode: config.agent.permission_mode,
+    ...(hasMcp || hasCallback ? {} : { allowedTools: config.agent.allowed_tools }),
+    maxTurns: config.agent.max_turns,
+    maxBudgetUsd: config.agent.max_budget_usd,
+    ...((hasSkills || hasPluginContent) ? { settingSources: ["project"] } : {}),
+  };
+
+  return `
+${claudeSdkPreamble()}
+const config = ${JSON.stringify(agentConfig)};
+const prompt = ${JSON.stringify(config.prompt)};
+
+async function main() {
+  emit({
+    type: 'run_started',
+    run_id: process.env.AGENT_PLANE_RUN_ID,
+    agent_id: process.env.AGENT_PLANE_AGENT_ID,
+    model: config.model,
+    timestamp: new Date().toISOString(),
+    mcp_server_count: Object.keys(mcpServers).length,
+    mcp_server_names: Object.keys(mcpServers),
+    mcp_errors: ${JSON.stringify(config.mcpErrors || [])},
+  });
+
+  try {
+    const options = {
+      ...config,
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      includePartialMessages: true,
+    };
+
+${claudeSdkStreamLoop()}
+${claudeSdkErrorAndCleanup()}
 `;
 }
 
@@ -999,7 +1007,6 @@ function buildSessionRunnerScript(config: SessionRunnerConfig): string {
   const agentConfig = {
     model: config.agent.model,
     permissionMode: config.agent.permission_mode,
-    // Don't restrict allowedTools when MCP servers are present
     ...(config.hasMcp ? {} : { allowedTools: config.agent.allowed_tools }),
     maxTurns: config.maxTurns,
     maxBudgetUsd: config.maxBudgetUsd,
@@ -1008,25 +1015,10 @@ function buildSessionRunnerScript(config: SessionRunnerConfig): string {
   };
 
   return `
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { writeFileSync, appendFileSync } from 'fs';
-
+${claudeSdkPreamble()}
 const config = ${JSON.stringify(agentConfig)};
 const prompt = ${JSON.stringify(config.prompt)};
 const sdkSessionId = ${JSON.stringify(config.sdkSessionId)};
-
-const mcpServers = process.env.MCP_SERVERS_JSON
-  ? JSON.parse(process.env.MCP_SERVERS_JSON)
-  : {};
-
-const transcriptPath = '/vercel/sandbox/transcript.ndjson';
-writeFileSync(transcriptPath, '');
-
-function emit(event) {
-  const line = JSON.stringify(event);
-  console.log(line);
-  appendFileSync(transcriptPath, line + '\\n');
-}
 
 async function main() {
   emit({
@@ -1040,55 +1032,15 @@ async function main() {
     mcp_errors: ${JSON.stringify(config.mcpErrors)},
   });
 
-  const options = {
-    ...config,
-    ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-    ...(sdkSessionId ? { resume: sdkSessionId } : {}),
-  };
-
   try {
-    for await (const message of query({ prompt, options })) {
-      if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
-        emit({ type: 'session_info', sdk_session_id: message.session_id });
-      }
-      if (message.type === 'stream_event') {
-        const ev = message.event;
-        if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-          console.log(JSON.stringify({ type: 'text_delta', text: ev.delta.text }));
-        }
-      } else {
-        emit(message);
-      }
-    }
-  } catch (err) {
-    emit({
-      type: 'error',
-      error: err.message || String(err),
-      code: 'execution_error',
-      timestamp: new Date().toISOString(),
-    });
-  }
+    const options = {
+      ...config,
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      ...(sdkSessionId ? { resume: sdkSessionId } : {}),
+    };
 
-  // Upload transcript for detached runs
-  if (process.env.AGENT_PLANE_PLATFORM_URL && process.env.AGENT_PLANE_RUN_TOKEN) {
-    try {
-      const { readFileSync } = await import('fs');
-      const transcript = readFileSync(transcriptPath);
-      await fetch(process.env.AGENT_PLANE_PLATFORM_URL + '/api/internal/runs/' + process.env.AGENT_PLANE_RUN_ID + '/transcript', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + process.env.AGENT_PLANE_RUN_TOKEN,
-          'Content-Type': 'application/x-ndjson',
-        },
-        body: transcript,
-      });
-    } catch (err) {
-      console.error('Failed to upload transcript:', err.message);
-    }
-  }
-}
-
-main().catch(err => { console.error('Runner fatal error:', err); process.exit(1); });
+${claudeSdkStreamLoop()}
+${claudeSdkErrorAndCleanup()}
 `;
 }
 
