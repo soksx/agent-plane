@@ -5,9 +5,10 @@ import { verifyRunToken } from "@/lib/crypto";
 import { getEnv } from "@/lib/env";
 import { uploadTranscript } from "@/lib/transcripts";
 import { transitionRunStatus } from "@/lib/runs";
+import { parseResultEvent } from "@/lib/transcript-utils";
 import { logger } from "@/lib/logger";
 import { z } from "zod";
-import type { RunId, RunStatus, TenantId } from "@/lib/types";
+import type { RunId, TenantId } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -68,7 +69,7 @@ export const POST = withErrorHandler(async (request: NextRequest, context) => {
   try {
     const transcript = lines.join("\n") + "\n";
     const blobUrl = await uploadTranscript(tenantId, typedRunId, transcript);
-    const resultData = parseResultEvent(lines[lines.length - 1]);
+    const resultData = await parseResultEvent(lines[lines.length - 1]);
 
     await transitionRunStatus(
       typedRunId,
@@ -98,43 +99,3 @@ export const POST = withErrorHandler(async (request: NextRequest, context) => {
     return jsonResponse({ error: "Failed to persist transcript" }, 500);
   }
 });
-
-function parseResultEvent(line: string): {
-  status: RunStatus;
-  updates: Record<string, unknown>;
-} | null {
-  try {
-    const event = JSON.parse(line);
-    if (event.type === "result") {
-      const status: RunStatus =
-        event.subtype === "success" ? "completed" : "failed";
-      return {
-        status,
-        updates: {
-          result_summary: event.subtype,
-          cost_usd: event.total_cost_usd,
-          num_turns: event.num_turns,
-          duration_ms: event.duration_ms,
-          duration_api_ms: event.duration_api_ms,
-          total_input_tokens: event.usage?.input_tokens,
-          total_output_tokens: event.usage?.output_tokens,
-          cache_read_tokens: event.usage?.cache_read_input_tokens,
-          cache_creation_tokens: event.usage?.cache_creation_input_tokens,
-          model_usage: event.modelUsage,
-        },
-      };
-    }
-    if (event.type === "error") {
-      return {
-        status: "failed",
-        updates: {
-          error_type: event.code || "execution_error",
-          error_messages: [event.error],
-        },
-      };
-    }
-  } catch {
-    // Not valid JSON
-  }
-  return null;
-}
