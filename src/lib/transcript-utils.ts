@@ -49,7 +49,6 @@ export async function parseResultEvent(line: string): Promise<{
           cache_creation_tokens: event.usage?.cache_creation_input_tokens,
           model_usage: event.modelUsage,
           runner: event.runner ?? null,
-          generation_id: event.generation_id ?? null,
         },
       };
     }
