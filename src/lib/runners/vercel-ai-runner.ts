@@ -14,11 +14,11 @@
 import type { SandboxConfig } from "../sandbox";
 
 /**
- * Build a system prompt that includes a skill index for on-demand reading.
- * Skills are injected as files into the workspace; the system prompt lists
- * their names so the agent can read them with sandbox__read_file when needed.
+ * Build a system prompt that lists available skills by name and description.
+ * Following the Vercel AI SDK skill pattern: skills are listed in the system
+ * prompt, and loaded on-demand via the load_skill tool.
  */
-export function buildSkillIndex(
+export function buildSkillsPrompt(
   skills: SandboxConfig["agent"]["skills"],
   pluginFiles?: Array<{ path: string; content: string }>,
 ): string {
@@ -26,23 +26,79 @@ export function buildSkillIndex(
 
   if (skills.length > 0) {
     lines.push("## Available Skills");
-    lines.push("Read these files with sandbox__read_file when relevant:");
+    lines.push("Use the `load_skill` tool to load a skill's full instructions when relevant.");
+    lines.push("");
     for (const skill of skills) {
-      for (const file of skill.files) {
-        lines.push(`- /vercel/sandbox/workspace/.skills/${skill.folder}/${file.path}`);
-      }
+      const mainFile = skill.files.find(f => f.path.endsWith(".md")) ?? skill.files[0];
+      // Extract first line of content as description
+      const firstLine = mainFile?.content?.split("\n").find(l => l.trim() && !l.startsWith("#") && !l.startsWith("---"))?.trim();
+      const desc = firstLine ? ` — ${firstLine.slice(0, 120)}` : "";
+      lines.push(`- \`${skill.folder}\`${desc}`);
     }
   }
 
   if (pluginFiles && pluginFiles.length > 0) {
-    lines.push("## Available Plugin Files");
-    lines.push("Read these files with sandbox__read_file when relevant:");
-    for (const f of pluginFiles) {
-      lines.push(`- /vercel/sandbox/workspace/${f.path}`);
+    const agentFiles = pluginFiles.filter(f => f.path.includes("/agents/"));
+    const skillFiles = pluginFiles.filter(f => f.path.includes("/skills/"));
+
+    if (skillFiles.length > 0) {
+      if (lines.length === 0) {
+        lines.push("## Available Skills");
+        lines.push("Use the `load_skill` tool to load a skill's full instructions when relevant.");
+        lines.push("");
+      }
+      for (const f of skillFiles) {
+        const name = f.path.split("/").pop()?.replace(/\.md$/, "") ?? f.path;
+        lines.push(`- \`${name}\` (plugin)`);
+      }
+    }
+
+    if (agentFiles.length > 0) {
+      lines.push("");
+      lines.push("## Agent Instructions (always active)");
+      for (const f of agentFiles) {
+        lines.push(f.content);
+      }
     }
   }
 
   return lines.length > 0 ? lines.join("\n") : "";
+}
+
+/**
+ * Build the JSON skill registry that the load_skill tool uses to look up skills.
+ */
+export function buildSkillRegistry(
+  skills: SandboxConfig["agent"]["skills"],
+  pluginFiles?: Array<{ path: string; content: string }>,
+): Array<{ name: string; path: string; content: string }> {
+  const registry: Array<{ name: string; path: string; content: string }> = [];
+
+  for (const skill of skills) {
+    const mainFile = skill.files.find(f => f.path.endsWith(".md")) ?? skill.files[0];
+    if (mainFile) {
+      registry.push({
+        name: skill.folder,
+        path: `/vercel/sandbox/workspace/.skills/${skill.folder}/${mainFile.path}`,
+        content: mainFile.content,
+      });
+    }
+  }
+
+  if (pluginFiles) {
+    for (const f of pluginFiles) {
+      if (f.path.includes("/skills/")) {
+        const name = f.path.split("/").pop()?.replace(/\.md$/, "") ?? f.path;
+        registry.push({
+          name,
+          path: `/vercel/sandbox/workspace/${f.path}`,
+          content: f.content,
+        });
+      }
+    }
+  }
+
+  return registry;
 }
 
 export function buildVercelAiRunnerScript(config: SandboxConfig): string {
@@ -52,13 +108,14 @@ export function buildVercelAiRunnerScript(config: SandboxConfig): string {
     systemPromptParts.push(config.agent.description);
   }
 
-  const skillIndex = buildSkillIndex(config.agent.skills, config.pluginFiles);
-  if (skillIndex) {
-    systemPromptParts.push(skillIndex);
+  const skillsPrompt = buildSkillsPrompt(config.agent.skills, config.pluginFiles);
+  if (skillsPrompt) {
+    systemPromptParts.push(skillsPrompt);
   }
 
   const systemPrompt = systemPromptParts.join("\n\n");
   const mcpErrors = config.mcpErrors || [];
+  const skillRegistry = buildSkillRegistry(config.agent.skills, config.pluginFiles);
 
   // The returned string is an ES module that runs inside the sandbox.
   // execSync is used intentionally for the bash tool — security is provided
@@ -98,10 +155,26 @@ function validatePath(rawPath) {
   return resolved;
 }
 
+// --- Skill registry (injected at build time) ---
+const skillRegistry = ${JSON.stringify(skillRegistry)};
+
 // --- Tool definitions (Zod schemas via AI SDK) ---
 const { z } = await import('zod');
 
 const builtinTools = {
+  load_skill: {
+    description: 'Load a skill to get specialized instructions. Use this when a task matches an available skill listed in the system prompt.',
+    parameters: z.object({
+      name: z.string().describe('The skill name to load (from the Available Skills list)'),
+    }),
+    execute: async ({ name }) => {
+      const skill = skillRegistry.find(s => s.name.toLowerCase() === name.toLowerCase());
+      if (!skill) {
+        return { error: 'Skill not found: ' + name + '. Available: ' + skillRegistry.map(s => s.name).join(', ') };
+      }
+      return { name: skill.name, skillDirectory: skill.path.replace(/\\/[^/]+$/, ''), content: skill.content };
+    }
+  },
   sandbox__read_file: {
     description: 'Read a file from the workspace',
     parameters: z.object({ path: z.string().describe('Absolute path to file') }),

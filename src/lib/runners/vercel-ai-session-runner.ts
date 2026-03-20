@@ -10,7 +10,7 @@
  * provides security, not the exec method.
  */
 import type { SandboxConfig } from "../sandbox";
-import { buildSkillIndex } from "./vercel-ai-runner";
+import { buildSkillsPrompt, buildSkillRegistry } from "./vercel-ai-runner";
 
 interface SessionRunnerConfig {
   agent: SandboxConfig["agent"];
@@ -30,13 +30,14 @@ export function buildVercelAiSessionRunnerScript(config: SessionRunnerConfig): s
     systemPromptParts.push(config.agent.description);
   }
 
-  const skillIndex = buildSkillIndex(config.agent.skills, config.pluginFiles);
-  if (skillIndex) {
-    systemPromptParts.push(skillIndex);
+  const skillsPrompt = buildSkillsPrompt(config.agent.skills, config.pluginFiles);
+  if (skillsPrompt) {
+    systemPromptParts.push(skillsPrompt);
   }
 
   const systemPrompt = systemPromptParts.join("\n\n");
   const mcpErrors = config.mcpErrors || [];
+  const skillRegistry = buildSkillRegistry(config.agent.skills, config.pluginFiles);
 
   // The returned string is an ES module that runs inside the sandbox.
   // execSync is used intentionally for the bash tool — security is provided
@@ -102,9 +103,25 @@ function validatePath(rawPath) {
   return resolved;
 }
 
+// --- Skill registry (injected at build time) ---
+const skillRegistry = ${JSON.stringify(skillRegistry)};
+
 const { z } = await import('zod');
 
 const builtinTools = {
+  load_skill: {
+    description: 'Load a skill to get specialized instructions. Use this when a task matches an available skill listed in the system prompt.',
+    parameters: z.object({
+      name: z.string().describe('The skill name to load (from the Available Skills list)'),
+    }),
+    execute: async ({ name }) => {
+      const skill = skillRegistry.find(s => s.name.toLowerCase() === name.toLowerCase());
+      if (!skill) {
+        return { error: 'Skill not found: ' + name + '. Available: ' + skillRegistry.map(s => s.name).join(', ') };
+      }
+      return { name: skill.name, skillDirectory: skill.path.replace(/\\/[^/]+$/, ''), content: skill.content };
+    }
+  },
   sandbox__read_file: {
     description: 'Read a file from the workspace',
     parameters: z.object({ path: z.string() }),
