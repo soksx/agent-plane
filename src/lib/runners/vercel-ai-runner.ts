@@ -262,7 +262,7 @@ async function main() {
         // Single emission site for tool events (NOT duplicated in fullStream)
         if (toolCalls) {
           for (const tc of toolCalls) {
-            emit({ type: 'tool_use', tool: tc.toolName, input: tc.args, tool_use_id: tc.toolCallId });
+            emit({ type: 'tool_use', tool_name: tc.toolName, name: tc.toolName, input: tc.args, tool_use_id: tc.toolCallId });
           }
         }
         if (toolResults) {
@@ -276,7 +276,7 @@ async function main() {
     // Stream text deltas ONLY — tool events come from onStepFinish
     let fullText = '';
     for await (const chunk of result.fullStream) {
-      if (chunk.type === 'text-delta') {
+      if (chunk.type === 'text-delta' && chunk.textDelta) {
         fullText += chunk.textDelta;
         // text_delta: streamed to stdout only, NOT written to transcript
         console.log(JSON.stringify({ type: 'text_delta', text: chunk.textDelta }));

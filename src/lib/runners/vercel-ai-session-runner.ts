@@ -243,7 +243,7 @@ async function main() {
       onStepFinish: ({ toolCalls, toolResults }) => {
         if (toolCalls) {
           for (const tc of toolCalls) {
-            emit({ type: 'tool_use', tool: tc.toolName, input: tc.args, tool_use_id: tc.toolCallId });
+            emit({ type: 'tool_use', tool_name: tc.toolName, name: tc.toolName, input: tc.args, tool_use_id: tc.toolCallId });
           }
         }
         if (toolResults) {
@@ -256,7 +256,7 @@ async function main() {
 
     let fullText = '';
     for await (const chunk of result.fullStream) {
-      if (chunk.type === 'text-delta') {
+      if (chunk.type === 'text-delta' && chunk.textDelta) {
         fullText += chunk.textDelta;
         console.log(JSON.stringify({ type: 'text_delta', text: chunk.textDelta }));
       }
