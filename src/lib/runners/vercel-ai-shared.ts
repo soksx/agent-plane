@@ -135,7 +135,7 @@ const builtinTools = {
         const host = parsed.hostname;
         if (host === 'localhost' || host === '127.0.0.1' || host === '::1'
             || host.startsWith('10.') || host.startsWith('192.168.')
-            || /^172\\\\.(1[6-9]|2[0-9]|3[01])\\\\/./.test(host)
+            || /^172\\.(1[6-9]|2[0-9]|3[01])\\./.test(host)
             || host.startsWith('169.254.')) {
           return 'Error: private/internal URLs not allowed';
         }
