@@ -149,6 +149,40 @@ const builtinTools = {
       }
     }
   },
+  sandbox__web_search: {
+    description: 'Search the web and return results. Use this to find current information, documentation, or answers to questions.',
+    parameters: z.object({
+      query: z.string().describe('Search query'),
+      num_results: z.number().optional().describe('Number of results (default 5, max 10)'),
+    }),
+    execute: async ({ query, num_results }) => {
+      try {
+        const n = Math.min(num_results || 5, 10);
+        const url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query);
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 15000);
+        const res = await fetch(url, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'AgentPlane/1.0' },
+        });
+        const html = await res.text();
+        // Extract result snippets from DuckDuckGo HTML
+        const results = [];
+        const resultPattern = /class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\\/a>[\\s\\S]*?class="result__snippet"[^>]*>([^<]*)/g;
+        let match;
+        while ((match = resultPattern.exec(html)) !== null && results.length < n) {
+          const href = match[1].startsWith('/') ? decodeURIComponent(match[1].replace(/^\\/l\\/\\?[^=]*=/, '').split('&')[0]) : match[1];
+          results.push({ title: match[2].trim(), url: href, snippet: match[3].trim() });
+        }
+        if (results.length === 0) {
+          return { query, results: [], note: 'No results found. Try rephrasing the query.' };
+        }
+        return { query, results };
+      } catch (e) {
+        return { error: 'Search failed: ' + e.message };
+      }
+    }
+  },
   sandbox__complete_task: {
     description: 'Call this when you have completed the task. Provide the final result summary.',
     parameters: z.object({ result: z.string().describe('Final result summary') }),
@@ -216,12 +250,16 @@ const configuredMcpErrors = ${mcpErrorsJson};
 }
 
 /**
- * Stream consumption + result event emission.
- * Handles textStream iteration, assistant event, and result/error events.
+ * Agent creation + stream consumption + result event emission.
+ * Uses ToolLoopAgent with combined stop conditions (stepCount + hasToolCall).
  *
  * @param mode - 'session' includes history update after response
  */
-export function buildStreamHandling(mode: "oneshot" | "session"): string {
+export function buildAgentExecution(mode: "oneshot" | "session"): string {
+  const promptArg = mode === "oneshot"
+    ? `prompt`
+    : `messages: history.messages`;
+
   const historyUpdate = mode === "session"
     ? `
     // Append assistant response to history
@@ -237,6 +275,33 @@ export function buildStreamHandling(mode: "oneshot" | "session"): string {
     : "";
 
   return `
+  try {
+    // Create agent with ToolLoopAgent (AI SDK recommended pattern)
+    const agent = new ToolLoopAgent({
+      model,
+      instructions: systemPrompt || undefined,
+      tools: allTools,
+      stopWhen: [
+        stepCountIs(maxTurns),
+        hasToolCall('sandbox__complete_task'),
+      ],
+      onStepFinish: ({ toolCalls, toolResults }) => {
+        if (toolCalls) {
+          for (const tc of toolCalls) {
+            emit({ type: 'tool_use', tool_name: tc.toolName, name: tc.toolName, input: tc.args, tool_use_id: tc.toolCallId });
+          }
+        }
+        if (toolResults) {
+          for (const tr of toolResults) {
+            emit({ type: 'tool_result', tool_use_id: tr.toolCallId, result: truncateToolResult(tr.result) });
+          }
+        }
+      },
+    });
+
+    // Stream the agent's response
+    const result = agent.stream({ ${promptArg} });
+
     // Stream text (provider-agnostic)
     for await (const textPart of result.textStream) {
       if (textPart) {

@@ -16,7 +16,7 @@ import {
   buildPreamble,
   buildToolDefinitions,
   buildMcpSetup,
-  buildStreamHandling,
+  buildAgentExecution,
 } from "./vercel-ai-shared";
 
 /**
@@ -139,7 +139,7 @@ ${buildMcpSetup(JSON.stringify(mcpErrors))}
 
 // --- Main execution ---
 async function main() {
-  const { streamText, stopWhen, stepCountIs, createGateway } = await import('ai');
+  const { ToolLoopAgent, stepCountIs, hasToolCall, createGateway } = await import('ai');
   const gateway = createGateway({ apiKey: process.env.AI_GATEWAY_API_KEY ?? '' });
   const model = gateway(modelId);
 
@@ -157,28 +157,7 @@ async function main() {
   const allTools = { ...builtinTools, ...mcpTools };
   const startTime = Date.now();
 
-  try {
-    const result = await streamText({
-      model,
-      system: systemPrompt || undefined,
-      prompt,
-      tools: allTools,
-      stopWhen: stepCountIs(maxTurns),
-      onStepFinish: ({ toolCalls, toolResults }) => {
-        if (toolCalls) {
-          for (const tc of toolCalls) {
-            emit({ type: 'tool_use', tool_name: tc.toolName, name: tc.toolName, input: tc.args, tool_use_id: tc.toolCallId });
-          }
-        }
-        if (toolResults) {
-          for (const tr of toolResults) {
-            emit({ type: 'tool_result', tool_use_id: tr.toolCallId, result: truncateToolResult(tr.result) });
-          }
-        }
-      },
-    });
-
-${buildStreamHandling("oneshot")}
+${buildAgentExecution("oneshot")}
 }
 
 main().catch(e => {
