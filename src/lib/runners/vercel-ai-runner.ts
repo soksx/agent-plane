@@ -302,7 +302,7 @@ async function main() {
     emit({
       type: 'result',
       subtype: 'success',
-      total_cost_usd: null,
+      total_cost_usd: 0,
       num_turns: steps?.length || 0,
       duration_ms: durationMs,
       usage: {
