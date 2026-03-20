@@ -118,6 +118,7 @@ function buildConversation(events: TranscriptEvent[]): ConversationItem[] {
       items.push({
         role: "system",
         model: String(event.model || ""),
+        tools: (event.mcp_server_names as string[]) || [],
       });
     } else if (event.type === "mcp_error") {
       items.push({
