@@ -42,8 +42,8 @@ export function buildVercelAiSessionRunnerScript(config: SessionRunnerConfig): s
   // execSync is used intentionally for the bash tool — security is provided
   // by the Vercel Sandbox boundary (network allowlist, isolated filesystem).
   return `
-import { streamText, stopWhen, stepCountIs } from 'ai';
-import { gateway } from '@ai-sdk/gateway';
+import { streamText, stopWhen, stepCountIs, createGateway } from 'ai';
+const gateway = createGateway({ apiKey: process.env.AI_GATEWAY_API_KEY ?? '' });
 import { createMCPClient } from '@ai-sdk/mcp';
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';

@@ -74,7 +74,7 @@ export async function refreshSdkSnapshot(): Promise<{ snapshotId: string; cleane
 
   const installCmd = await sandbox.runCommand({
     cmd: "npm",
-    args: ["install", "@anthropic-ai/claude-agent-sdk", "ai", "@ai-sdk/gateway", "@ai-sdk/mcp", "@modelcontextprotocol/sdk", "zod"],
+    args: ["install", "@anthropic-ai/claude-agent-sdk", "ai", "@ai-sdk/mcp", "@modelcontextprotocol/sdk", "zod"],
   });
   if (installCmd.exitCode !== 0) {
     const stderr = await installCmd.stderr();
@@ -195,7 +195,7 @@ async function createSandboxFromSnapshot(opts: {
 async function installSdk(sandbox: Sandbox, contextId: string): Promise<void> {
   const installCmd = await sandbox.runCommand({
     cmd: "npm",
-    args: ["install", "@anthropic-ai/claude-agent-sdk", "ai", "@ai-sdk/gateway", "@ai-sdk/mcp", "@modelcontextprotocol/sdk", "zod"],
+    args: ["install", "@anthropic-ai/claude-agent-sdk", "ai", "@ai-sdk/mcp", "@modelcontextprotocol/sdk", "zod"],
   });
   if (installCmd.exitCode !== 0) {
     const installErrors = await installCmd.stderr();
